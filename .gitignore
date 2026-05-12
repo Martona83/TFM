@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+# Keep folder scaffolding, ignore real datasets
+/data/raw/*
+/data/processed/*
+!/data/raw/.gitkeep
+!/data/processed/.gitkeep
+*.csv
+*.xlsx
+*.xls
+*.parquet
+*.feather
+*.h5
+*.hdf5
+
+# Outputs and models
+/outputs/*
+/models/*
+/checkpoints/*
+!/outputs/.gitkeep
+!/models/.gitkeep
+!/checkpoints/.gitkeep
+*.pkl
+*.pickle
+*.joblib
+*.pt
+*.pth
+*.onnx
+
+# Secrets
+.env
+*.env
+*.key
+*.pem
+*.crt
+secrets.*
+credentials.*
+token.*
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
