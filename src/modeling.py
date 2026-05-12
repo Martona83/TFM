@@ -344,5 +344,47 @@ def train_models(train_df: pd.DataFrame, validation_df: pd.DataFrame, config: Pi
     return trained, pd.DataFrame(config_rows), pd.DataFrame(validation_rows).sort_values("balanced_accuracy", ascending=False).reset_index(drop=True)
 
 
+
+
+def generate_model_training_candidates(train_df: pd.DataFrame, feature_cols: list[str], config: PipelineConfig, include_unavailable: bool = False) -> pd.DataFrame:
+    """Create a tabular plan of trainable model+hyperparameter candidates.
+
+    The output is notebook-friendly and can be iterated to train specific
+    configurations or used to inspect the search space before GridSearchCV.
+    """
+    from sklearn.model_selection import ParameterGrid
+
+    preprocessor, numeric_features, categorical_features = build_preprocessor(train_df, feature_cols, config)
+    specs = model_specifications(config)
+    rows: list[dict[str, Any]] = []
+    for model_name in config.enabled_models or ():
+        spec = specs.get(model_name)
+        if spec is None:
+            if include_unavailable:
+                rows.append({
+                    "model": model_name,
+                    "candidate_id": None,
+                    "available": False,
+                    "params": None,
+                    "pipeline": None,
+                    "rationale": "Estimator unavailable in this environment.",
+                })
+            continue
+        pipeline = Pipeline([("preprocess", preprocessor), ("model", spec["estimator"])])
+        grid = spec["grid"]
+        for i, params in enumerate(ParameterGrid(grid), start=1):
+            clean_params = {k.replace("model__", ""): v for k, v in params.items()}
+            rows.append({
+                "model": model_name,
+                "candidate_id": f"{model_name}__{i}",
+                "available": True,
+                "params": clean_params,
+                "pipeline": pipeline.set_params(**params),
+                "rationale": spec["rationale"],
+                "numeric_features": list(numeric_features),
+                "categorical_features": list(categorical_features),
+            })
+    return pd.DataFrame(rows)
+
 def predict_model(trained_model: TrainedModel, df: pd.DataFrame, config: PipelineConfig | None = None) -> np.ndarray:
     return _predict_proba_binary(trained_model.estimator, df[trained_model.feature_cols])
