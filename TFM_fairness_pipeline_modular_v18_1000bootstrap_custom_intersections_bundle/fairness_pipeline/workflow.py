@@ -41,6 +41,7 @@ from .reporting import (
     build_manifest,
     configure_plot_style,
     export_results_archive,
+    generate_markdown_report,
     plot_categorical_distributions,
     plot_confusion_matrices,
     plot_correlation_heatmap,
@@ -873,10 +874,13 @@ def stage_7_finalise(ctx: WorkflowContext) -> WorkflowContext:
     save_table(recommendations, ctx.paths, "23_accuracy_and_mitigation_recommendations.csv")
     manifest = build_manifest(ctx.paths)
     save_table(manifest, ctx.paths, "24_artifact_manifest.csv")
+    report_path = generate_markdown_report(ctx.paths)
     ctx.tables.update({"final_decision_registry": final_selection, "accuracy_and_mitigation_recommendations": recommendations, "artifact_manifest": manifest})
+    ctx.tables["automatic_report"] = pd.DataFrame([{"report_path": str(report_path)}])
     show_table("Final decision registry", final_selection)
     show_table("Accuracy and mitigation recommendations", recommendations, max_rows=ctx.config.max_table_rows_display)
     show_table("Artifact manifest", manifest, max_rows=ctx.config.max_table_rows_display)
+    show_markdown(f"**Automatic markdown report created:** `{report_path}`")
     show_markdown(f"**All outputs have been exported to:** `{ctx.paths['root']}`")
     return ctx
 

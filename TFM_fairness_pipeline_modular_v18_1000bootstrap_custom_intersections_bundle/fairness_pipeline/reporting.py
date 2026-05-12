@@ -612,6 +612,57 @@ def build_manifest(paths: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def generate_markdown_report(
+    paths: dict[str, Any],
+    *,
+    title: str = "Fairness pipeline automatic report",
+    include_manifest_preview: bool = True,
+) -> Path:
+    """Create a Markdown summary report that links generated tables and figures."""
+    root = Path(paths["root"])
+    report_path = root / "00_automatic_results_report.md"
+    tables_dir = Path(paths["tables"])
+    figures_dir = Path(paths["figures"])
+    manifest_df = build_manifest(paths)
+    now_utc = pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    lines: list[str] = [
+        f"# {title}",
+        "",
+        f"- Generated: **{now_utc}**",
+        f"- Results root: `{root}`",
+        "",
+        "## Tables",
+        "",
+    ]
+
+    table_rows = manifest_df[manifest_df.get("type", pd.Series(dtype=str)) == "table"] if not manifest_df.empty else pd.DataFrame()
+    if table_rows.empty:
+        lines.append("_No tables generated._")
+    else:
+        for _, row in table_rows.iterrows():
+            rel = Path(row["path"]).resolve().relative_to(root.resolve())
+            lines.append(f"- `{row['filename']}` ({int(row['size_bytes']):,} bytes) — `{rel}`")
+
+    lines.extend(["", "## Figures", ""])
+    fig_rows = manifest_df[manifest_df.get("type", pd.Series(dtype=str)) == "figure"] if not manifest_df.empty else pd.DataFrame()
+    if fig_rows.empty:
+        lines.append("_No figures generated._")
+    else:
+        for _, row in fig_rows.iterrows():
+            rel = Path(row["path"]).resolve().relative_to(root.resolve())
+            lines.append(f"- `{row['filename']}` ({int(row['size_bytes']):,} bytes)")
+            lines.append(f"  ![{row['filename']}]({rel.as_posix()})")
+
+    if include_manifest_preview and not manifest_df.empty:
+        lines.extend(["", "## Manifest preview", ""])
+        preview = manifest_df[["type", "filename", "size_bytes"]].head(20).to_markdown(index=False)
+        lines.extend(preview.splitlines())
+
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report_path
+
+
 def create_results_archive(paths: dict[str, Any], archive_name: str | None = None) -> Path:
     """Create a ZIP archive containing every exported table and figure."""
     import zipfile

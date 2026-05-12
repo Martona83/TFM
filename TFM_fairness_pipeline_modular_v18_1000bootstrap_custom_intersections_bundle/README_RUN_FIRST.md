@@ -14,6 +14,7 @@ Run the notebook `TFM_fairness_pipeline_modular_v18_1000bootstrap_custom_interse
 - Mitigation strategies remain documented as pre-processing, intra-processing and post-processing.
 - The consolidated mitigation leaderboard remains available as `20_best_mitigation_model_combinations.csv`.
 - Statistical evidence remains available as `20b_mitigation_statistical_evidence_by_metric.csv`.
+- A new automatic Markdown report is generated at the end of the run: `00_automatic_results_report.md` (includes a compact index of exported tables and embedded figure previews).
 
 ## Recommended run
 
@@ -103,4 +104,4 @@ USER_CONFIG["data"].update({
 })
 ```
 
-The final notebook cell exports all generated tables and figures as a ZIP archive.
+The final notebook cells now generate: (1) `00_automatic_results_report.md`, and (2) a ZIP archive containing all tables and figures.
