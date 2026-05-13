@@ -1184,11 +1184,6 @@ def merge_model_performance_fairness_summary(validation_results: pd.DataFrame, t
     return merged[cols].reset_index(drop=True)
 
 
-def mitigation_combination_summary(mitigation_summary_df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
-    """Alias kept for workflow readability."""
-    return summarise_mitigation_combinations(mitigation_summary_df, alpha=alpha)
-
-
 def rank_mitigation_candidates(mitigation_summary: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
     """Rank each model × mitigation × attribute result for detailed audit selection."""
     if mitigation_summary is None or mitigation_summary.empty:
