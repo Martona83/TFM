@@ -258,7 +258,6 @@ def train_models(train_df: pd.DataFrame, validation_df: pd.DataFrame, config: Pi
     trained: dict[str, TrainedModel] = {}
     config_rows: list[dict[str, Any]] = []
     validation_rows: list[dict[str, Any]] = []
-
     for model_name in config.enabled_models or ():
         if model_name not in specs:
             log(f"[Model training] {model_name}: skipped because the estimator is unavailable in this environment.")
