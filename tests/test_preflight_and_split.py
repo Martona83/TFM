@@ -29,3 +29,14 @@ def test_temporal_split_is_deterministic_ordered():
     splits = split_data(df, ('age_group',), cfg)
     assert splits['train']['event_time'].max() <= splits['validation']['event_time'].min()
     assert splits['validation']['event_time'].max() <= splits['test']['event_time'].min()
+
+def test_duplicate_entity_ids_across_partitions_fail_fast():
+    df = pd.DataFrame({
+        'target':[0,1,0,1,0,1,0,1],
+        'event_time':pd.date_range('2020-01-01', periods=8),
+        'entity_id':['x1','x1','x2','x3','x4','x5','x6','x7'],
+        'age_group':['A','A','B','B','A','B','A','B']
+    })
+    cfg = config_from_user_config({'split_strategy':'random_stratified', 'entity_id_col':'entity_id', 'test_size':0.25, 'validation_size':0.25})
+    with pytest.raises(ValueError):
+        split_data(df, ('age_group',), cfg)

@@ -552,6 +552,17 @@ def _stratify_label(df: pd.DataFrame, sensitive_attrs: tuple[str, ...], preferre
     return df["target"].astype(str)
 
 
+def _validate_no_cross_partition_duplicate_ids(splits: dict[str, pd.DataFrame], entity_id_col: str | None) -> None:
+    if not entity_id_col:
+        return
+    keys = ["train", "validation", "test"]
+    id_sets = {k: set(splits[k][entity_id_col].dropna().astype(str).tolist()) for k in keys if entity_id_col in splits[k].columns}
+    for i, a in enumerate(keys):
+        for b in keys[i+1:]:
+            if a in id_sets and b in id_sets and (id_sets[a] & id_sets[b]):
+                raise ValueError(f"Preflight failed: duplicate entity IDs found across split partitions ({a} vs {b}).")
+
+
 def split_data(analytic: pd.DataFrame, sensitive_attrs: tuple[str, ...], config: PipelineConfig) -> dict[str, pd.DataFrame]:
     strategy = str(getattr(config, "split_strategy", "random_stratified") or "random_stratified").lower()
     time_cols = tuple(getattr(config, "event_time_columns", ()) or ())
@@ -572,7 +583,9 @@ def split_data(analytic: pd.DataFrame, sensitive_attrs: tuple[str, ...], config:
         n_val = max(1, int(round(len(train_full) * float(config.validation_size))))
         train = train_full.iloc[:-n_val].copy()
         validation = train_full.iloc[-n_val:].copy()
-        return {"train": train.reset_index(drop=True), "validation": validation.reset_index(drop=True), "train_full": train_full.reset_index(drop=True), "test": test.reset_index(drop=True)}
+        splits = {"train": train.reset_index(drop=True), "validation": validation.reset_index(drop=True), "train_full": train_full.reset_index(drop=True), "test": test.reset_index(drop=True)}
+        _validate_no_cross_partition_duplicate_ids(splits, getattr(config, "entity_id_col", None))
+        return splits
 
     if strategy == "group":
         gid = getattr(config, "split_group_id_col", None)
@@ -584,7 +597,9 @@ def split_data(analytic: pd.DataFrame, sensitive_attrs: tuple[str, ...], config:
         gss2 = GroupShuffleSplit(n_splits=1, test_size=config.validation_size, random_state=config.random_state+1)
         tr_idx, va_idx = next(gss2.split(train_full, groups=train_full[gid]))
         train, validation = train_full.iloc[tr_idx].copy(), train_full.iloc[va_idx].copy()
-        return {"train": train.reset_index(drop=True), "validation": validation.reset_index(drop=True), "train_full": train_full.reset_index(drop=True), "test": test.reset_index(drop=True)}
+        splits = {"train": train.reset_index(drop=True), "validation": validation.reset_index(drop=True), "train_full": train_full.reset_index(drop=True), "test": test.reset_index(drop=True)}
+        _validate_no_cross_partition_duplicate_ids(splits, getattr(config, "entity_id_col", None))
+        return splits
     stratify = _stratify_label(analytic, sensitive_attrs, config.stratify_by)
     train_full, test = train_test_split(
         analytic,
@@ -599,7 +614,9 @@ def split_data(analytic: pd.DataFrame, sensitive_attrs: tuple[str, ...], config:
         random_state=config.random_state + 1,
         stratify=stratify_train,
     )
-    return {"train": train.reset_index(drop=True), "validation": validation.reset_index(drop=True), "train_full": train_full.reset_index(drop=True), "test": test.reset_index(drop=True)}
+    splits = {"train": train.reset_index(drop=True), "validation": validation.reset_index(drop=True), "train_full": train_full.reset_index(drop=True), "test": test.reset_index(drop=True)}
+    _validate_no_cross_partition_duplicate_ids(splits, getattr(config, "entity_id_col", None))
+    return splits
 
 
 def split_summary(splits: dict[str, pd.DataFrame]) -> pd.DataFrame:

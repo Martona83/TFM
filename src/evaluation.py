@@ -11,6 +11,7 @@ from .modeling import set_xgboost_prediction_device
 import numpy as np
 import pandas as pd
 from scipy.stats import binomtest
+from statsmodels.stats.multitest import multipletests
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
@@ -115,6 +116,27 @@ def expected_calibration_error(y_true: np.ndarray, prob: np.ndarray, n_bins: int
     return float(ece)
 
 
+
+
+def _wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    if n <= 0:
+        return (np.nan, np.nan)
+    phat = k / n
+    denom = 1 + (z**2)/n
+    centre = (phat + (z**2)/(2*n)) / denom
+    half = (z/denom) * np.sqrt((phat*(1-phat)/n) + (z**2)/(4*(n**2)))
+    return float(max(0.0, centre-half)), float(min(1.0, centre+half))
+
+
+def minimum_detectable_effect_for_rate(n: int, alpha: float = 0.05, power: float = 0.8, baseline: float = 0.5) -> float:
+    if n <= 0:
+        return np.nan
+    # Normal approximation for two-sided difference in proportions against baseline.
+    z_alpha = 1.96 if alpha <= 0.05 else 1.645
+    z_beta = 0.84 if power >= 0.8 else 1.28
+    se = np.sqrt(max(1e-12, 2 * baseline * (1 - baseline) / n))
+    return float((z_alpha + z_beta) * se)
+
 def confusion_rates(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     y_true = np.asarray(y_true).astype(int)
     y_pred = np.asarray(y_pred).astype(int)
@@ -208,15 +230,24 @@ def fairness_by_group(df: pd.DataFrame, y_prob: np.ndarray, threshold: float, se
         for group, idx in df.groupby(attr, dropna=False).groups.items():
             idx = np.asarray(list(idx), dtype=int)
             rates = confusion_rates(y_true[idx], y_pred[idx])
+            n_i = int(len(idx))
+            events_i = int(y_true[idx].sum())
+            ci_tpr = _wilson_ci(int(rates["tp"]), int(rates["tp"] + rates["fn"]))
+            ci_fpr = _wilson_ci(int(rates["fp"]), int(rates["fp"] + rates["tn"]))
+            ci_sel = _wilson_ci(int(rates["tp"] + rates["fp"]), n_i)
             rows.append({
                 "model": model_name,
                 "prediction_type": prediction_label,
                 "attribute": attr,
                 "group": group,
-                "n": int(len(idx)),
-                "events": int(y_true[idx].sum()),
+                "n": n_i,
+                "events": events_i,
                 "non_events": int(len(idx) - y_true[idx].sum()),
-                "accuracy": float(accuracy_score(y_true[idx], y_pred[idx])) if len(idx) else np.nan,
+                "accuracy": float(accuracy_score(y_true[idx], y_pred[idx])) if n_i else np.nan,
+                "tpr_ci_low": ci_tpr[0], "tpr_ci_high": ci_tpr[1],
+                "fpr_ci_low": ci_fpr[0], "fpr_ci_high": ci_fpr[1],
+                "selection_rate_ci_low": ci_sel[0], "selection_rate_ci_high": ci_sel[1],
+                "mde_rate_guidance": minimum_detectable_effect_for_rate(n_i),
                 **rates,
             })
     return pd.DataFrame(rows)
@@ -236,7 +267,14 @@ def fairness_gap_summary(group_df: pd.DataFrame) -> pd.DataFrame:
             row[f"{metric}_gap"] = float(values.max() - values.min())
         row["combined_fpr_fnr_gap"] = float(row.get("fpr_gap", 0.0) + row.get("fnr_gap", 0.0))
         rows.append(row)
-    return pd.DataFrame(rows).sort_values(["model", "combined_fpr_fnr_gap"], ascending=[True, False]).reset_index(drop=True)
+    out = pd.DataFrame(rows).sort_values(["model", "combined_fpr_fnr_gap"], ascending=[True, False]).reset_index(drop=True)
+    if not out.empty and "combined_fpr_fnr_gap" in out.columns:
+        # Treat per-attribute gap magnitude as a proxy test statistic for multiplicity tracking.
+        pvals = np.clip(1.0 - np.asarray(out["combined_fpr_fnr_gap"], dtype=float), 1e-12, 1.0)
+        _, p_adj, _, _ = multipletests(pvals, method="fdr_bh")
+        out["p_value_proxy"] = pvals
+        out["p_value_adjusted"] = p_adj
+    return out
 
 
 def select_primary_attribute(gap_df: pd.DataFrame, champion_model: str) -> str:
