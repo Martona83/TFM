@@ -553,6 +553,26 @@ def _stratify_label(df: pd.DataFrame, sensitive_attrs: tuple[str, ...], preferre
 
 
 def split_data(analytic: pd.DataFrame, sensitive_attrs: tuple[str, ...], config: PipelineConfig) -> dict[str, pd.DataFrame]:
+    strategy = str(getattr(config, "split_strategy", "random_stratified") or "random_stratified").lower()
+    time_cols = tuple(getattr(config, "event_time_columns", ()) or ())
+    if getattr(config, "enforce_temporal_for_event_time", True) and time_cols and strategy != "temporal":
+        existing = [c for c in time_cols if c in analytic.columns]
+        if existing:
+            raise ValueError(f"Temporal split is required when event-time columns are configured: {existing}. Set split_strategy='temporal'.")
+    if strategy == "temporal":
+        time_col = getattr(config, "split_time_col", None) or (time_cols[0] if time_cols else None)
+        if not time_col or time_col not in analytic.columns:
+            raise ValueError("split_strategy='temporal' requires split_time_col present in analytic data.")
+        ordered = analytic.sort_values(time_col).reset_index(drop=True)
+        n = len(ordered)
+        n_test = max(1, int(round(n * float(config.test_size))))
+        n_train_full = max(2, n - n_test)
+        train_full = ordered.iloc[:n_train_full].copy()
+        test = ordered.iloc[n_train_full:].copy()
+        n_val = max(1, int(round(len(train_full) * float(config.validation_size))))
+        train = train_full.iloc[:-n_val].copy()
+        validation = train_full.iloc[-n_val:].copy()
+        return {"train": train.reset_index(drop=True), "validation": validation.reset_index(drop=True), "train_full": train_full.reset_index(drop=True), "test": test.reset_index(drop=True)}
     stratify = _stratify_label(analytic, sensitive_attrs, config.stratify_by)
     train_full, test = train_test_split(
         analytic,
