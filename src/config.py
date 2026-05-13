@@ -157,6 +157,8 @@ class PipelineConfig:
     auto_download_results_zip: bool = False
     show_mitigation_progress: bool = True
     mitigation_progress_detail: str = "standard"  # none, standard, verbose
+    model_artifact_dirname: str = "trained_models"
+    mitigation_artifact_subdir: str = "mitigation_round_2"
 
 
 def preset_defaults(preset: str) -> dict[str, Any]:
@@ -373,6 +375,16 @@ def resolve_project_paths(config: PipelineConfig) -> dict[str, Path | str | bool
     root = base / f"outputs_{name}_fairness_analysis_{scenario}_{config.execution_preset}"
     figures = root / "figures"
     tables = root / "tables"
-    for p in (root, figures, tables):
+    model_artifacts = root / str(config.model_artifact_dirname or "trained_models")
+    mitigation_artifacts = model_artifacts / str(config.mitigation_artifact_subdir or "mitigation_round_2")
+    for p in (root, figures, tables, model_artifacts, mitigation_artifacts):
         p.mkdir(parents=True, exist_ok=True)
-    return {"base": base, "root": root, "figures": figures, "tables": tables, **env}
+    return {
+        "base": base,
+        "root": root,
+        "figures": figures,
+        "tables": tables,
+        "model_artifacts": model_artifacts,
+        "mitigation_artifacts": mitigation_artifacts,
+        **env,
+    }

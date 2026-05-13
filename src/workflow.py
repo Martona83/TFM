@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
 from typing import Any
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -276,7 +277,18 @@ def stage_3_train_models(ctx: WorkflowContext) -> WorkflowContext:
     ctx.models = models
     ctx.tables.update({"model_training_configuration": model_config_df, "validation_model_results": validation_results_df})
     save_table(model_config_df, ctx.paths, "12_model_training_configuration_and_rationale.csv")
+    model_artifact_rows: list[dict[str, Any]] = []
+    for model_name, trained in models.items():
+        artifact_path = Path(ctx.paths["model_artifacts"]) / f"{model_name}.pkl"
+        with artifact_path.open("wb") as f:
+            pickle.dump(trained, f)
+        model_artifact_rows.append({"model": model_name, "artifact_path": str(artifact_path), "round": "baseline_training"})
+    model_artifacts_df = pd.DataFrame(model_artifact_rows).sort_values("model").reset_index(drop=True)
+    save_table(model_artifacts_df, ctx.paths, "12b_model_artifact_registry.csv")
+    ctx.tables["model_artifact_registry"] = model_artifacts_df
     show_table("Model training configuration and selected parameters", model_config_df, max_rows=ctx.config.max_table_rows_display)
+    show_table("Saved trained-model artifacts", model_artifacts_df, max_rows=ctx.config.max_table_rows_display)
+    show_markdown(f"Mitigation-ready folder for second-round upgrades: `{ctx.paths['mitigation_artifacts']}`")
     show_markdown("Validation metrics are stored internally and are merged with held-out test performance and fairness gaps after the fairness-audit stage.")
     return ctx
 
