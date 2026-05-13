@@ -422,9 +422,15 @@ def stage_4_baseline_visual_evaluation(ctx: WorkflowContext) -> WorkflowContext:
     validation_threshold_sweep_df["is_selected_threshold"] = np.isclose(validation_threshold_sweep_df["threshold"].astype(float), validation_threshold_sweep_df["selected_threshold"].astype(float))
     ctx.test_probs = test_probs
     ctx.validation_probs = validation_probs
-    ctx.champion_model = str(test_performance_df.sort_values("balanced_accuracy", ascending=False).iloc[0]["model"])
-    ctx.tables.update({"test_performance_all_models": test_performance_df, "validation_threshold_sweep": validation_threshold_sweep_df})
+    ranked = test_performance_df.sort_values(["balanced_accuracy", "roc_auc", "ece"], ascending=[False, False, True]).reset_index(drop=True)
+    ctx.champion_model = str(ranked.iloc[0]["model"])
+    champion_rationale_df = ranked.copy()
+    champion_rationale_df.insert(0, "selection_rank", range(1, len(champion_rationale_df) + 1))
+    champion_rationale_df["selection_rule"] = "rank by balanced_accuracy desc, roc_auc desc, ece asc"
+    champion_rationale_df["is_champion"] = champion_rationale_df["model"].eq(ctx.champion_model)
+    ctx.tables.update({"test_performance_all_models": test_performance_df, "validation_threshold_sweep": validation_threshold_sweep_df, "champion_selection_rationale": champion_rationale_df})
     save_table(validation_threshold_sweep_df, ctx.paths, "13_validation_threshold_selection_sweep_all_models.csv")
+    save_table(champion_rationale_df, ctx.paths, "13b_champion_selection_rationale.csv")
     show_markdown(f"**Selected model for primary interpretation:** `{ctx.champion_model}` based on held-out balanced accuracy.")
     show_markdown("The detailed validation, test and baseline fairness metrics are intentionally reported later as one merged table to avoid duplicated displays.")
     show_table("Validation decision-threshold selection sweep", validation_threshold_sweep_df, max_rows=min(ctx.config.max_table_rows_display, 120))
