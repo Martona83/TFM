@@ -1,0 +1,31 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+        fairness-backend: ['core', 'fairness']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+      - name: Sync deps (core)
+        if: matrix.fairness-backend == 'core'
+        run: uv pip install -r src/requirements_core.txt
+      - name: Sync deps (fairness optional)
+        if: matrix.fairness-backend == 'fairness'
+        run: |
+          uv pip install -r src/requirements_core.txt
+          uv pip install -r src/requirements_fairness.txt || true
+      - name: Dependency integrity
+        run: python scripts/verify_dependency_integrity.py
+      - name: Run deterministic regression tests
+        run: pytest -q
