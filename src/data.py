@@ -553,21 +553,57 @@ def _stratify_label(df: pd.DataFrame, sensitive_attrs: tuple[str, ...], preferre
     return df["target"].astype(str)
 
 
+
+
+def preflight_validate_dataset(analytic: pd.DataFrame, feature_cols: list[str], config: PipelineConfig) -> pd.DataFrame:
+    issues: list[dict[str, Any]] = []
+    if "target" not in analytic.columns or analytic["target"].isna().all():
+        raise ValueError("Preflight failed: target column is missing or fully null.")
+    if analytic["target"].nunique(dropna=True) <= 1:
+        raise ValueError("Preflight failed: target is constant; model training is not meaningful.")
+    time_col = str(getattr(config, "split_time_col", None) or "")
+    if not time_col:
+        for c in analytic.columns:
+            lc = str(c).lower()
+            if any(k in lc for k in ("event_time", "timestamp", "datetime", "date")):
+                time_col = str(c)
+                break
+    if time_col:
+        if str(getattr(config, "split_strategy", "random_stratified")).lower() != "temporal":
+            raise ValueError(f"Preflight failed: detected event-time column '{time_col}' but split_strategy is not temporal.")
+        for col in feature_cols:
+            if col == time_col or any(k in str(col).lower() for k in ("post_outcome", "postevent", "after_outcome", "future_")):
+                raise ValueError(f"Preflight failed: feature '{col}' appears post-outcome or future-dated.")
+    issues.append({"check": "target_not_constant", "status": "pass"})
+    issues.append({"check": "temporal_policy", "status": "pass"})
+    return pd.DataFrame(issues)
+
 def split_data(analytic: pd.DataFrame, sensitive_attrs: tuple[str, ...], config: PipelineConfig) -> dict[str, pd.DataFrame]:
-    stratify = _stratify_label(analytic, sensitive_attrs, config.stratify_by)
-    train_full, test = train_test_split(
-        analytic,
-        test_size=config.test_size,
-        random_state=config.random_state,
-        stratify=stratify,
-    )
-    stratify_train = _stratify_label(train_full, sensitive_attrs, config.stratify_by)
-    train, validation = train_test_split(
-        train_full,
-        test_size=config.validation_size,
-        random_state=config.random_state + 1,
-        stratify=stratify_train,
-    )
+    strategy = str(getattr(config, "split_strategy", "random_stratified") or "random_stratified").lower()
+    if strategy == "temporal":
+        time_col = getattr(config, "split_time_col", None) or next((c for c in analytic.columns if "time" in str(c).lower() or "date" in str(c).lower()), None)
+        if not time_col or time_col not in analytic.columns:
+            raise ValueError("Temporal split requested but no split_time_col was found in data.")
+        df = analytic.sort_values(time_col).reset_index(drop=True)
+        n = len(df)
+        n_test = int(round(n * config.test_size))
+        n_train_full = max(1, n - n_test)
+        train_full, test = df.iloc[:n_train_full], df.iloc[n_train_full:]
+        n_val = int(round(len(train_full) * config.validation_size))
+        n_train = max(1, len(train_full) - n_val)
+        train, validation = train_full.iloc[:n_train], train_full.iloc[n_train:]
+    else:
+        stratify = _stratify_label(analytic, sensitive_attrs, config.stratify_by)
+        train_full, test = train_test_split(analytic, test_size=config.test_size, random_state=config.random_state, stratify=stratify)
+        stratify_train = _stratify_label(train_full, sensitive_attrs, config.stratify_by)
+        train, validation = train_test_split(train_full, test_size=config.validation_size, random_state=config.random_state + 1, stratify=stratify_train)
+
+    id_col = getattr(config, "split_group_col", None) or ("pidnum" if "pidnum" in analytic.columns else None)
+    if id_col and id_col in analytic.columns:
+        overlaps = set(train[id_col]).intersection(set(test[id_col])) | set(validation[id_col]).intersection(set(test[id_col])) | set(train[id_col]).intersection(set(validation[id_col]))
+        if overlaps:
+            raise ValueError(f"Preflight failed: duplicate IDs across partitions for '{id_col}' ({len(overlaps)} overlaps).")
+
     return {"train": train.reset_index(drop=True), "validation": validation.reset_index(drop=True), "train_full": train_full.reset_index(drop=True), "test": test.reset_index(drop=True)}
 
 

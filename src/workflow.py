@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
+import uuid
 from itertools import combinations
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,7 @@ from .data import (
     prepare_dataset,
     sensitive_attribute_summary,
     split_data,
+    preflight_validate_dataset,
     split_summary,
     variable_schema,
 )
@@ -92,6 +95,8 @@ class WorkflowContext:
     champion_model: str | None = None
     primary_attribute: str | None = None
     results_zip_path: Path | None = None
+    run_id: str | None = None
+    parent_run_id: str | None = None
 
 
 def _config_snapshot(config: PipelineConfig, support: dict[str, Any]) -> pd.DataFrame:
@@ -106,6 +111,7 @@ def _config_snapshot(config: PipelineConfig, support: dict[str, Any]) -> pd.Data
 
 def initialise_eda(user_config: dict | None = None) -> WorkflowContext:
     config = config_from_user_config(user_config)
+    run_id = f"run-{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
     set_reproducibility(config.random_state)
     configure_plot_style()
     paths = resolve_project_paths(config)
@@ -145,6 +151,7 @@ def initialise_eda(user_config: dict | None = None) -> WorkflowContext:
 
 def initialise_pipeline(user_config: dict | None = None) -> WorkflowContext:
     config = config_from_user_config(user_config)
+    run_id = f"run-{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
     set_reproducibility(config.random_state)
     configure_plot_style()
     paths = resolve_project_paths(config)
@@ -176,7 +183,7 @@ def initialise_pipeline(user_config: dict | None = None) -> WorkflowContext:
     save_table(acceleration_df, paths, "06b_acceleration_status.csv")
     show_table("Fairness pipeline configuration", config_snapshot, max_rows=config.max_table_rows_display)
     show_table("Acceleration status", acceleration_df, max_rows=config.max_table_rows_display)
-    return WorkflowContext(config=config, paths=paths, tables={"fairness_pipeline_configuration": config_snapshot, "acceleration_status": acceleration_df})
+    return WorkflowContext(config=config, paths=paths, tables={"fairness_pipeline_configuration": config_snapshot, "acceleration_status": acceleration_df}, run_id=run_id)
 
 
 def stage_1_raw_dataset_eda(ctx: WorkflowContext) -> WorkflowContext:
@@ -229,6 +236,7 @@ def stage_2_configured_dataset_preparation(ctx: WorkflowContext) -> WorkflowCont
     feature_cols, schema_df, feature_policy_df = auto_select_features(prepared["analytic"], prepared, ctx.config)
     overview_df = build_dataset_overview(prepared, feature_cols)
     sensitive_df = sensitive_attribute_summary(prepared["analytic"], tuple(prepared["sensitive_attrs"]))
+    preflight_df = preflight_validate_dataset(prepared["analytic"], list(feature_cols), ctx.config)
     splits = split_data(prepared["analytic"], tuple(prepared["sensitive_attrs"]), ctx.config)
     split_df = split_summary(splits)
 
@@ -245,12 +253,14 @@ def stage_2_configured_dataset_preparation(ctx: WorkflowContext) -> WorkflowCont
         "cohort_or_target_flow": prepared["eligibility"],
         "sensitive_attribute_summary": sensitive_df,
         "split_summary": split_df,
+        "preflight_validation": preflight_df,
     })
     save_table(feature_policy_df, ctx.paths, "07_automatic_feature_selection_policy.csv")
     save_table(overview_df, ctx.paths, "08_configured_dataset_overview.csv")
     save_table(prepared["eligibility"], ctx.paths, "09_cohort_or_target_flow.csv")
     save_table(sensitive_df, ctx.paths, "10_sensitive_attribute_summary.csv")
     save_table(split_df, ctx.paths, "11_train_validation_test_split_summary.csv")
+    save_table(preflight_df, ctx.paths, "11b_preflight_validation_checks.csv")
 
     show_markdown(f"I have detected dataset mode `{prepared['dataset_mode']}` and internal target column `target`. The original target source is `{prepared.get('target_original_col')}`.")
     show_markdown(f"**Automatically selected predictors:** `{', '.join(feature_cols)}`")
@@ -260,6 +270,7 @@ def stage_2_configured_dataset_preparation(ctx: WorkflowContext) -> WorkflowCont
     show_table("Cohort / target eligibility flow", prepared["eligibility"])
     show_table("Sensitive attribute summary", sensitive_df, max_rows=ctx.config.max_table_rows_display)
     show_table("Train / validation / test split summary", split_df)
+    show_table("Preflight validation checks", preflight_df, max_rows=ctx.config.max_table_rows_display)
 
     ctx.figures["dataset_flow"] = plot_dataset_flow(prepared["eligibility"], ctx.paths, ctx.config.display_figures)
     ctx.figures["target_distribution"] = plot_target_distribution(prepared["analytic"], ctx.paths, ctx.config.display_figures)
@@ -881,11 +892,33 @@ def stage_7_finalise(ctx: WorkflowContext) -> WorkflowContext:
         {"area": "Data quality", "recommendation": "Improve labels, reduce missingness in clinically relevant predictors, and collect more observations in under-represented sensitive groups where possible.", "rationale": "Fairness mitigation cannot fully compensate for weak signal, noisy labels, or very small subgroup event counts."},
         {"area": "Robustness", "recommendation": "Repeat the standard preset with several random seeds and, if possible, evaluate on an external dataset or temporal hold-out.", "rationale": "Fairness conclusions can be sensitive to split composition and subgroup event counts."},
     ])
+
+    deployment_rows = []
+    comb = ctx.tables.get("mitigation_combination_summary", pd.DataFrame())
+    if not comb.empty:
+        top = comb.iloc[0]
+        acc_drop = float(top.get("delta_balanced_accuracy", 0.0))
+        combined_gap = float(top.get("mitigated_combined_gap", np.nan)) if "mitigated_combined_gap" in top.index else np.nan
+        pass_flag = True
+        reasons = []
+        max_drop = getattr(ctx.config, "max_allowed_balanced_accuracy_drop", None)
+        if max_drop is not None and abs(min(acc_drop, 0.0)) > float(max_drop):
+            pass_flag = False; reasons.append(f"balanced_accuracy_drop_exceeds_{max_drop}")
+        max_gap = getattr(ctx.config, "max_allowed_combined_gap", None)
+        if max_gap is not None and not pd.isna(combined_gap) and combined_gap > float(max_gap):
+            pass_flag = False; reasons.append(f"combined_gap_exceeds_{max_gap}")
+        deployment_rows.append({"deployment_pass": bool(pass_flag), "reasons": "; ".join(reasons) if reasons else "none", "run_id": ctx.run_id})
+    deployment_df = pd.DataFrame(deployment_rows or [{"deployment_pass": True, "reasons": "no_mitigation_summary_available", "run_id": ctx.run_id}])
+    save_table(deployment_df, ctx.paths, "21c_deployment_readiness.csv")
+    ctx.tables["deployment_readiness"] = deployment_df
+
     save_table(final_selection, ctx.paths, "22_final_decision_registry.csv")
     save_table(recommendations, ctx.paths, "23_accuracy_and_mitigation_recommendations.csv")
+    run_lineage_df = pd.DataFrame([{"run_id": ctx.run_id, "parent_run_id": ctx.parent_run_id, "stage": "baseline"}, {"run_id": f"{ctx.run_id}-mitigation", "parent_run_id": ctx.run_id, "stage": "mitigation"}])
+    save_table(run_lineage_df, ctx.paths, "21d_run_lineage.csv")
     manifest = build_manifest(ctx.paths)
     save_table(manifest, ctx.paths, "24_artifact_manifest.csv")
-    ctx.tables.update({"final_decision_registry": final_selection, "accuracy_and_mitigation_recommendations": recommendations, "artifact_manifest": manifest})
+    ctx.tables.update({"final_decision_registry": final_selection, "accuracy_and_mitigation_recommendations": recommendations, "artifact_manifest": manifest, "run_lineage": run_lineage_df})
     show_table("Final decision registry", final_selection)
     show_table("Accuracy and mitigation recommendations", recommendations, max_rows=ctx.config.max_table_rows_display)
     show_table("Artifact manifest", manifest, max_rows=ctx.config.max_table_rows_display)
