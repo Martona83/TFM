@@ -84,6 +84,10 @@ def _preflight_validate(prepared: dict[str, Any], config: PipelineConfig) -> pd.
     if leaking:
         raise ValueError(f"Preflight failed: post-outcome/event-time features included as predictors: {leaking}")
     rows.append({"check": "no_event_time_leakage_features", "status": "pass", "event_time_columns": ",".join(event_cols)})
+    id_col = getattr(config, "entity_id_col", None)
+    if id_col and id_col in analytic.columns:
+        dup = analytic[id_col].duplicated(keep=False)
+        rows.append({"check": "entity_id_column_present", "status": "pass", "entity_id_col": str(id_col), "duplicate_ids_in_analytic": int(dup.sum())})
     return pd.DataFrame(rows)
 
 def _hash_file(path: Path) -> str:
@@ -162,6 +166,12 @@ def _export_monitoring_spec(ctx: WorkflowContext) -> pd.DataFrame:
         rows.append({'protected_attribute':attr,'fairness_gap_threshold':float(getattr(ctx.config,'max_allowed_fairness_gap',0.1) or 0.1),'drift_threshold':'psi>0.2','retraining_trigger':'2 consecutive monthly alert breaches'})
     df=pd.DataFrame(rows)
     save_table(df, ctx.paths, '26_monitoring_spec.csv')
+    Path(ctx.paths['tables']).joinpath('26_monitoring_spec.json').write_text(df.to_json(orient='records', indent=2))
+    try:
+        import yaml  # type: ignore
+        Path(ctx.paths['tables']).joinpath('26_monitoring_spec.yaml').write_text(yaml.safe_dump(df.to_dict(orient='records'), sort_keys=False))
+    except Exception:
+        pass
     monthly = pd.DataFrame([{'metric':'balanced_accuracy','granularity':'monthly'},{'metric':'brier','granularity':'monthly'},{'metric':'ece','granularity':'monthly'},{'metric':'combined_fpr_fnr_gap','granularity':'monthly'}])
     save_table(monthly, ctx.paths, '27_monthly_metrics_schema.csv')
     return df
@@ -1000,6 +1010,12 @@ def stage_7_finalise(ctx: WorkflowContext) -> WorkflowContext:
         if gap > float(ctx.config.max_allowed_fairness_gap):
             status = "fail"
             reasons.append(f"best mitigated combined gap {gap:.4f} exceeds limit {ctx.config.max_allowed_fairness_gap:.4f}")
+    ba_drop_limit = getattr(ctx.config, "max_balanced_accuracy_drop", None)
+    if not mit.empty and ba_drop_limit is not None and "delta_balanced_accuracy" in mit.columns:
+        worst_drop = float(mit["delta_balanced_accuracy"].min())
+        if worst_drop < -float(ba_drop_limit):
+            status = "fail"
+            reasons.append(f"worst mitigation balanced-accuracy drop {abs(worst_drop):.4f} exceeds limit {float(ba_drop_limit):.4f}")
     readiness = pd.DataFrame([{"deployment_readiness": status, "reasons": "; ".join(reasons) if reasons else "all configured guardrails passed"}])
     save_table(final_selection, ctx.paths, "22_final_decision_registry.csv")
     save_table(recommendations, ctx.paths, "23_accuracy_and_mitigation_recommendations.csv")
