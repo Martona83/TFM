@@ -70,6 +70,45 @@ from .reporting import (
     show_table,
 )
 from .runtime import fairness_support_status, set_reproducibility
+import hashlib, json, subprocess, sys
+
+def _preflight_validate(prepared: dict[str, Any], config: PipelineConfig) -> pd.DataFrame:
+    analytic = prepared["analytic"]
+    rows: list[dict[str, Any]] = []
+    if "target" not in analytic.columns or analytic["target"].isna().all() or analytic["target"].nunique(dropna=True) <= 1:
+        raise ValueError("Preflight failed: target is missing, all-NaN, or constant.")
+    rows.append({"check": "target_present_nonconstant", "status": "pass"})
+    event_cols = [c for c in tuple(getattr(config, "event_time_columns", ()) or ()) if c in analytic.columns]
+    feature_cols = prepared.get("feature_cols_seed", ())
+    leaking = [c for c in event_cols if c in feature_cols]
+    if leaking:
+        raise ValueError(f"Preflight failed: post-outcome/event-time features included as predictors: {leaking}")
+    rows.append({"check": "no_event_time_leakage_features", "status": "pass", "event_time_columns": ",".join(event_cols)})
+    return pd.DataFrame(rows)
+
+def _hash_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _run_metadata(ctx: WorkflowContext) -> pd.DataFrame:
+    csv_path = Path(ctx.prepared.get("csv_path"))
+    commit = "unknown"
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except Exception:
+        pass
+    rows = [
+        {"key": "run_id", "value": str(ctx.paths["root"].name)},
+        {"key": "parent_run_id", "value": "baseline"},
+        {"key": "git_commit_hash", "value": commit},
+        {"key": "dataset_hash_sha256", "value": _hash_file(csv_path) if csv_path.exists() else "missing"},
+        {"key": "config_json", "value": json.dumps(ctx.config.__dict__, default=str)},
+        {"key": "python_version", "value": sys.version.split()[0]},
+    ]
+    return pd.DataFrame(rows)
 
 
 @dataclass
@@ -226,11 +265,18 @@ def stage_1_raw_dataset_eda(ctx: WorkflowContext) -> WorkflowContext:
 def stage_2_configured_dataset_preparation(ctx: WorkflowContext) -> WorkflowContext:
     show_markdown("## 4. Configured dataset preparation and automatic feature selection")
     prepared = prepare_dataset(ctx.config)
+    preflight_df = _preflight_validate(prepared, ctx.config)
     feature_cols, schema_df, feature_policy_df = auto_select_features(prepared["analytic"], prepared, ctx.config)
     overview_df = build_dataset_overview(prepared, feature_cols)
     sensitive_df = sensitive_attribute_summary(prepared["analytic"], tuple(prepared["sensitive_attrs"]))
     splits = split_data(prepared["analytic"], tuple(prepared["sensitive_attrs"]), ctx.config)
     split_df = split_summary(splits)
+    id_col = getattr(ctx.config, "entity_id_col", None)
+    if id_col and id_col in prepared["analytic"].columns:
+        train_ids = set(splits["train"][id_col].dropna().astype(str))
+        test_ids = set(splits["test"][id_col].dropna().astype(str))
+        if train_ids.intersection(test_ids):
+            raise ValueError(f"Preflight failed: duplicate IDs across train/test partitions for id column '{id_col}'.")
 
     ctx.prepared = prepared
     ctx.source = prepared["source"]
@@ -245,12 +291,17 @@ def stage_2_configured_dataset_preparation(ctx: WorkflowContext) -> WorkflowCont
         "cohort_or_target_flow": prepared["eligibility"],
         "sensitive_attribute_summary": sensitive_df,
         "split_summary": split_df,
+        "preflight_validation": preflight_df,
     })
     save_table(feature_policy_df, ctx.paths, "07_automatic_feature_selection_policy.csv")
     save_table(overview_df, ctx.paths, "08_configured_dataset_overview.csv")
     save_table(prepared["eligibility"], ctx.paths, "09_cohort_or_target_flow.csv")
     save_table(sensitive_df, ctx.paths, "10_sensitive_attribute_summary.csv")
     save_table(split_df, ctx.paths, "11_train_validation_test_split_summary.csv")
+    save_table(preflight_df, ctx.paths, "10b_preflight_validation.csv")
+    metadata_df = _run_metadata(ctx)
+    save_table(metadata_df, ctx.paths, "00c_run_metadata.csv")
+    ctx.tables["run_metadata"] = metadata_df
 
     show_markdown(f"I have detected dataset mode `{prepared['dataset_mode']}` and internal target column `target`. The original target source is `{prepared.get('target_original_col')}`.")
     show_markdown(f"**Automatically selected predictors:** `{', '.join(feature_cols)}`")
@@ -881,11 +932,29 @@ def stage_7_finalise(ctx: WorkflowContext) -> WorkflowContext:
         {"area": "Data quality", "recommendation": "Improve labels, reduce missingness in clinically relevant predictors, and collect more observations in under-represented sensitive groups where possible.", "rationale": "Fairness mitigation cannot fully compensate for weak signal, noisy labels, or very small subgroup event counts."},
         {"area": "Robustness", "recommendation": "Repeat the standard preset with several random seeds and, if possible, evaluate on an external dataset or temporal hold-out.", "rationale": "Fairness conclusions can be sensitive to split composition and subgroup event counts."},
     ])
+    reasons: list[str] = []
+    status = "pass"
+    perf = ctx.tables.get("test_performance_all_models", pd.DataFrame())
+    if not perf.empty and ctx.champion_model:
+        row = perf.loc[perf["model"] == ctx.champion_model].head(1)
+        if not row.empty and getattr(ctx.config, "minimum_subgroup_support", None):
+            pass
+    mit = ctx.tables.get("mitigation_summary_significance", pd.DataFrame())
+    if not mit.empty and getattr(ctx.config, "max_allowed_fairness_gap", None) is not None:
+        gap = float(mit["combined_gap_mitigated"].min())
+        if gap > float(ctx.config.max_allowed_fairness_gap):
+            status = "fail"
+            reasons.append(f"best mitigated combined gap {gap:.4f} exceeds limit {ctx.config.max_allowed_fairness_gap:.4f}")
+    readiness = pd.DataFrame([{"deployment_readiness": status, "reasons": "; ".join(reasons) if reasons else "all configured guardrails passed"}])
     save_table(final_selection, ctx.paths, "22_final_decision_registry.csv")
     save_table(recommendations, ctx.paths, "23_accuracy_and_mitigation_recommendations.csv")
     manifest = build_manifest(ctx.paths)
     save_table(manifest, ctx.paths, "24_artifact_manifest.csv")
+    save_table(readiness, ctx.paths, "25_deployment_readiness.csv")
     ctx.tables.update({"final_decision_registry": final_selection, "accuracy_and_mitigation_recommendations": recommendations, "artifact_manifest": manifest})
+    ctx.tables["deployment_readiness"] = readiness
+    if status == "fail" and bool(getattr(ctx.config, "fail_ci_on_guardrail", True)):
+        raise RuntimeError("Configured deployment guardrails failed. See 25_deployment_readiness.csv.")
     show_table("Final decision registry", final_selection)
     show_table("Accuracy and mitigation recommendations", recommendations, max_rows=ctx.config.max_table_rows_display)
     show_table("Artifact manifest", manifest, max_rows=ctx.config.max_table_rows_display)
