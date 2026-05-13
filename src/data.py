@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy import stats
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GroupShuffleSplit
 
 from .config import (
     CLINICAL_EXAMPLE_BASELINE_FEATURES,
@@ -572,6 +572,18 @@ def split_data(analytic: pd.DataFrame, sensitive_attrs: tuple[str, ...], config:
         n_val = max(1, int(round(len(train_full) * float(config.validation_size))))
         train = train_full.iloc[:-n_val].copy()
         validation = train_full.iloc[-n_val:].copy()
+        return {"train": train.reset_index(drop=True), "validation": validation.reset_index(drop=True), "train_full": train_full.reset_index(drop=True), "test": test.reset_index(drop=True)}
+
+    if strategy == "group":
+        gid = getattr(config, "split_group_id_col", None)
+        if not gid or gid not in analytic.columns:
+            raise ValueError("split_strategy='group' requires split_group_id_col present in analytic data.")
+        gss = GroupShuffleSplit(n_splits=1, test_size=config.test_size, random_state=config.random_state)
+        train_idx, test_idx = next(gss.split(analytic, groups=analytic[gid]))
+        train_full, test = analytic.iloc[train_idx].copy(), analytic.iloc[test_idx].copy()
+        gss2 = GroupShuffleSplit(n_splits=1, test_size=config.validation_size, random_state=config.random_state+1)
+        tr_idx, va_idx = next(gss2.split(train_full, groups=train_full[gid]))
+        train, validation = train_full.iloc[tr_idx].copy(), train_full.iloc[va_idx].copy()
         return {"train": train.reset_index(drop=True), "validation": validation.reset_index(drop=True), "train_full": train_full.reset_index(drop=True), "test": test.reset_index(drop=True)}
     stratify = _stratify_label(analytic, sensitive_attrs, config.stratify_by)
     train_full, test = train_test_split(

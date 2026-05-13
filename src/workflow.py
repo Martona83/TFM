@@ -70,7 +70,7 @@ from .reporting import (
     show_table,
 )
 from .runtime import fairness_support_status, set_reproducibility
-import hashlib, json, subprocess, sys
+import hashlib, json, subprocess, sys, os, time
 
 def _preflight_validate(prepared: dict[str, Any], config: PipelineConfig) -> pd.DataFrame:
     analytic = prepared["analytic"]
@@ -110,6 +110,61 @@ def _run_metadata(ctx: WorkflowContext) -> pd.DataFrame:
     ]
     return pd.DataFrame(rows)
 
+
+
+
+def _package_lockfile_snapshot() -> dict[str, str]:
+    candidates = [Path('uv.lock'), Path('poetry.lock'), Path('requirements.txt'), Path('src/requirements.txt')]
+    out = {}
+    for c in candidates:
+        if c.exists() and c.is_file():
+            try:
+                out[str(c)] = _hash_file(c)
+            except Exception:
+                out[str(c)] = 'unreadable'
+    return out
+
+def _log_experiment_artifacts(ctx: WorkflowContext) -> None:
+    """Best-effort MLflow/W&B logging with run lineage metadata."""
+    meta = {
+        'run_id': str(ctx.paths['root'].name),
+        'parent_run_id': 'baseline',
+        'config_json': json.dumps(ctx.config.__dict__, default=str),
+        'dataset_hash': _hash_file(Path(ctx.prepared.get('csv_path'))) if ctx.prepared.get('csv_path') else 'missing',
+    }
+    meta.update({'lockfiles': json.dumps(_package_lockfile_snapshot())})
+    try:
+        import mlflow  # type: ignore
+        mlflow.set_experiment('fairness_pipeline')
+        with mlflow.start_run(run_name=meta['run_id']):
+            mlflow.log_params({k: str(v) for k,v in meta.items()})
+            for name, df in ctx.tables.items():
+                path = Path(ctx.paths['tables']) / f'mlflow_{name}.csv'
+                df.to_csv(path, index=False)
+                mlflow.log_artifact(str(path), artifact_path='tables')
+    except Exception:
+        pass
+    try:
+        import wandb  # type: ignore
+        run = wandb.init(project='fairness_pipeline', name=meta['run_id'], reinit=True, config=ctx.config.__dict__)
+        run.summary['parent_run_id'] = meta['parent_run_id']
+        run.summary['dataset_hash'] = meta['dataset_hash']
+        run.summary['lockfiles'] = meta['lockfiles']
+        for name, df in ctx.tables.items():
+            run.log({f'table/{name}': wandb.Table(dataframe=df)})
+        run.finish()
+    except Exception:
+        pass
+
+def _export_monitoring_spec(ctx: WorkflowContext) -> pd.DataFrame:
+    rows=[]
+    for attr in (ctx.sensitive_attrs or ()):
+        rows.append({'protected_attribute':attr,'fairness_gap_threshold':float(getattr(ctx.config,'max_allowed_fairness_gap',0.1) or 0.1),'drift_threshold':'psi>0.2','retraining_trigger':'2 consecutive monthly alert breaches'})
+    df=pd.DataFrame(rows)
+    save_table(df, ctx.paths, '26_monitoring_spec.csv')
+    monthly = pd.DataFrame([{'metric':'balanced_accuracy','granularity':'monthly'},{'metric':'brier','granularity':'monthly'},{'metric':'ece','granularity':'monthly'},{'metric':'combined_fpr_fnr_gap','granularity':'monthly'}])
+    save_table(monthly, ctx.paths, '27_monthly_metrics_schema.csv')
+    return df
 
 @dataclass
 class WorkflowContext:
@@ -959,6 +1014,8 @@ def stage_7_finalise(ctx: WorkflowContext) -> WorkflowContext:
     show_table("Accuracy and mitigation recommendations", recommendations, max_rows=ctx.config.max_table_rows_display)
     show_table("Artifact manifest", manifest, max_rows=ctx.config.max_table_rows_display)
     show_markdown(f"**All outputs have been exported to:** `{ctx.paths['root']}`")
+    _export_monitoring_spec(ctx)
+    _log_experiment_artifacts(ctx)
     return ctx
 
 
