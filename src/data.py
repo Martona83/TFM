@@ -231,9 +231,8 @@ def build_generic_analytic(raw_source: pd.DataFrame, config: PipelineConfig, csv
     df["target_original"] = df[target_col]
     df["target"] = encoded
     df, sensitive_attrs = infer_sensitive_attrs(df, config, target_col)
-    if target_col != "target":
-        # keep the original target column but exclude it from features later
-        pass
+    # `target_original` preserves the source target; feature selection excludes both
+    # `target` and the original target column later in `build_feature_matrix`.
     before = len(df)
     analytic = df.loc[df["target"].notna()].copy().reset_index(drop=True)
     endpoint = f"Generic binary classification target `{target_col}`; positive class = `{positive}`."
