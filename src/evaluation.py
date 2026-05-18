@@ -11,7 +11,103 @@ from .modeling import set_xgboost_prediction_device
 import numpy as np
 import pandas as pd
 from scipy.stats import binomtest
-from statsmodels.stats.multitest import multipletests
+try:
+    from statsmodels.stats.multitest import multipletests
+except ModuleNotFoundError:
+    def multipletests(
+        pvals,
+        alpha: float = 0.05,
+        method: str = "hs",
+        is_sorted: bool = False,
+        returnsorted: bool = False,
+    ):
+        """Fallback implementation for common multiple-testing corrections.
+
+        This keeps `src.evaluation` importable when `statsmodels` is not
+        installed. It returns the same 4-tuple shape as
+        `statsmodels.stats.multitest.multipletests`:
+        `(reject, pvals_corrected, alphacSidak, alphacBonf)`.
+        """
+        pvals = np.asarray(pvals, dtype=float)
+        if pvals.ndim != 1:
+            pvals = pvals.reshape(-1)
+        m = int(pvals.size)
+        if m == 0:
+            return (
+                np.asarray([], dtype=bool),
+                np.asarray([], dtype=float),
+                np.nan,
+                np.nan,
+            )
+
+        method_key = str(method).lower()
+        aliases = {
+            "b": "bonferroni",
+            "bonf": "bonferroni",
+            "s": "sidak",
+            "h": "holm",
+            "hs": "holm-sidak",
+            "holm-sidak": "holm",
+            "fdr_i": "fdr_bh",
+            "fdr_p": "fdr_bh",
+            "fdri": "fdr_bh",
+            "fdrp": "fdr_bh",
+        }
+        method_key = aliases.get(method_key, method_key)
+
+        if is_sorted:
+            order = np.arange(m)
+            p_sorted = pvals.copy()
+        else:
+            order = np.argsort(pvals)
+            p_sorted = pvals[order]
+
+        alphac_bonf = alpha / m
+        alphac_sidak = 1.0 - (1.0 - alpha) ** (1.0 / m)
+
+        if method_key == "bonferroni":
+            pvals_corrected_sorted = np.minimum(p_sorted * m, 1.0)
+            reject_sorted = p_sorted <= alphac_bonf
+        elif method_key == "sidak":
+            pvals_corrected_sorted = np.minimum(1.0 - (1.0 - p_sorted) ** m, 1.0)
+            reject_sorted = p_sorted <= alphac_sidak
+        elif method_key == "holm":
+            factors = np.arange(m, 0, -1, dtype=float)
+            raw = p_sorted * factors
+            pvals_corrected_sorted = np.maximum.accumulate(raw)
+            pvals_corrected_sorted = np.minimum(pvals_corrected_sorted, 1.0)
+            reject_sorted = p_sorted <= (alpha / factors)
+            if np.any(reject_sorted):
+                last_true = np.max(np.nonzero(reject_sorted)[0])
+                reject_sorted[: last_true + 1] = True
+                reject_sorted[last_true + 1 :] = False
+        elif method_key == "fdr_bh":
+            ranks = np.arange(1, m + 1, dtype=float)
+            raw = p_sorted * m / ranks
+            pvals_corrected_sorted = np.minimum.accumulate(raw[::-1])[::-1]
+            pvals_corrected_sorted = np.minimum(pvals_corrected_sorted, 1.0)
+            crit = ranks * alpha / m
+            reject_sorted = p_sorted <= crit
+            if np.any(reject_sorted):
+                last_true = np.max(np.nonzero(reject_sorted)[0])
+                reject_sorted[: last_true + 1] = True
+                reject_sorted[last_true + 1 :] = False
+        else:
+            raise ValueError(
+                "Unsupported multipletests method without statsmodels: "
+                f"{method!r}. Install `statsmodels` for full method support."
+            )
+
+        if returnsorted or is_sorted:
+            reject = reject_sorted
+            pvals_corrected = pvals_corrected_sorted
+        else:
+            reject = np.empty(m, dtype=bool)
+            reject[order] = reject_sorted
+            pvals_corrected = np.empty(m, dtype=float)
+            pvals_corrected[order] = pvals_corrected_sorted
+
+        return reject, pvals_corrected, alphac_sidak, alphac_bonf
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
