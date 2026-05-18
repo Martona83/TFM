@@ -51,7 +51,12 @@ class DataHelperTests(unittest.TestCase):
             preflight_validate_dataset(analytic, ["feat"], cfg)
 
     def test_stratify_label_uses_preferred_sensitive_attribute_when_supported(self):
-        df = pd.DataFrame({"target": [0, 0, 1, 1], "sex": ["F", "M", "F", "M"]})
+        df = pd.DataFrame(
+            {
+                "target": [0, 0, 1, 1, 0, 0, 1, 1],
+                "sex": ["F", "M", "F", "M", "F", "M", "F", "M"],
+            }
+        )
         label = _stratify_label(df, ("sex",), preferred_attr="sex")
         self.assertTrue(label.str.contains("__").all())
 
