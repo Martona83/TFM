@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - codex/**
+      - copilot/**
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+        dependency-set: ["core", "fairness"]
+
+    name: test (${{ matrix.python-version }}, ${{ matrix.dependency-set }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Create virtual environment
+        run: uv venv .venv
+
+      - name: Sync deps (core)
+        if: matrix.dependency-set == 'core'
+        run: uv pip install --python .venv/bin/python -r src/requirements_core.txt
+
+      - name: Sync deps (fairness optional)
+        if: matrix.dependency-set == 'fairness'
+        run: |
+          uv pip install --python .venv/bin/python -r src/requirements_core.txt
+          uv pip install --python .venv/bin/python -r src/requirements_fairness.txt
+
+      - name: Dependency integrity
+        run: .venv/bin/python -m pip check
+
+      - name: Run deterministic regression tests
+        run: |
+          .venv/bin/python -m py_compile src/*.py
+          .venv/bin/python -m src.run_sanity_check
