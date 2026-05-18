@@ -30,6 +30,7 @@ def test_temporal_split_is_deterministic_ordered():
     assert splits['train']['event_time'].max() <= splits['validation']['event_time'].min()
     assert splits['validation']['event_time'].max() <= splits['test']['event_time'].min()
 
+
 def test_duplicate_entity_ids_across_partitions_fail_fast():
     df = pd.DataFrame({
         'target':[0,1,0,1,0,1,0,1],
