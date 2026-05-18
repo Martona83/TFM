@@ -366,8 +366,13 @@ def fairness_gap_summary(group_df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(rows).sort_values(["model", "combined_fpr_fnr_gap"], ascending=[True, False]).reset_index(drop=True)
     if not out.empty and "combined_fpr_fnr_gap" in out.columns:
         # Treat per-attribute gap magnitude as a proxy test statistic for multiplicity tracking.
-        pvals = np.clip(1.0 - np.asarray(out["combined_fpr_fnr_gap"], dtype=float), 1e-12, 1.0)
-        _, p_adj, _, _ = multipletests(pvals, method="fdr_bh")
+        raw_pvals = 1.0 - np.asarray(out["combined_fpr_fnr_gap"], dtype=float)
+        pvals = np.where(np.isfinite(raw_pvals), np.clip(raw_pvals, 1e-12, 1.0), np.nan)
+        p_adj = np.full(pvals.shape, np.nan, dtype=float)
+        valid_mask = np.isfinite(pvals)
+        if np.any(valid_mask):
+            _, p_adj_valid, _, _ = multipletests(pvals[valid_mask], method="fdr_bh")
+            p_adj[valid_mask] = p_adj_valid
         out["p_value_proxy"] = pvals
         out["p_value_adjusted"] = p_adj
     return out
