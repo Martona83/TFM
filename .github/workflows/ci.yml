@@ -45,7 +45,7 @@ jobs:
           uv pip install --python .venv/bin/python -r src/requirements_fairness.txt
 
       - name: Dependency integrity
-        run: .venv/bin/python -m pip check
+        run: uv pip check --python .venv/bin/python
 
       - name: Run deterministic regression tests
         run: |
