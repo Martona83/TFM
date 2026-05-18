@@ -1,6 +1,8 @@
-try:
+import importlib.util
+
+if importlib.util.find_spec("fairness_pipeline.workflow") is not None:
     from fairness_pipeline.workflow import run_full_pipeline
-except ModuleNotFoundError:
+else:
     from src.workflow import run_full_pipeline
 
 
