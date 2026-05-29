@@ -2,6 +2,7 @@
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 from fairness_pipeline.workflow import run_full_pipeline
 =======
 =======
@@ -14,6 +15,9 @@ except ModuleNotFoundError:
     from src.workflow import run_full_pipeline
 
 >>>>>>> parent of ee2e379 (Potential fix for pull request finding)
+=======
+from fairness_pipeline.workflow import run_full_pipeline
+>>>>>>> parent of a3da1b2 (ci: create uv-based workflow and harden sanity check import)
 =======
 from fairness_pipeline.workflow import run_full_pipeline
 >>>>>>> parent of a3da1b2 (ci: create uv-based workflow and harden sanity check import)
