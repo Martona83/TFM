@@ -1,10 +1,4 @@
-import importlib.util
-
-if importlib.util.find_spec("fairness_pipeline.workflow") is not None:
-    from fairness_pipeline.workflow import run_full_pipeline
-else:
-    from src.workflow import run_full_pipeline
-
+from fairness_pipeline.workflow import run_full_pipeline
 
 USER_CONFIG = {
     "runtime": {"execution_preset": "smoke", "output_base_dir": "./sanity_outputs", "n_jobs": 1},
