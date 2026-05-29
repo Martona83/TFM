@@ -107,9 +107,6 @@ class PipelineConfig:
     test_size: float = 0.20
     validation_size: float = 0.20
     stratify_by: str | None = "auto"
-    split_strategy: str = "random_stratified"  # random_stratified, group, temporal
-    split_group_col: str | None = None
-    split_time_col: str | None = None
 
     # Models and search
     enabled_models: tuple[str, ...] | list[str] | None = None
@@ -149,11 +146,6 @@ class PipelineConfig:
     max_balanced_accuracy_drop: float | None = None  # backwards-compatible alias
     bootstrap_reps: int | None = None
     significance_alpha: float = 0.05
-
-    # Governance guardrails
-    max_allowed_balanced_accuracy_drop: float | None = 0.05
-    max_allowed_combined_gap: float | None = None
-    minimum_subgroup_support: int = 20
 
     # Reporting controls
     display_figures: bool = True
