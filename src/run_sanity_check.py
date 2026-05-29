@@ -1,6 +1,9 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 from fairness_pipeline.workflow import run_full_pipeline
 =======
+=======
+>>>>>>> parent of ee2e379 (Potential fix for pull request finding)
 try:
     from fairness_pipeline.workflow import run_full_pipeline
 except ModuleNotFoundError:
