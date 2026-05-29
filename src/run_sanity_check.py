@@ -1,4 +1,12 @@
+<<<<<<< HEAD
 from fairness_pipeline.workflow import run_full_pipeline
+=======
+try:
+    from fairness_pipeline.workflow import run_full_pipeline
+except ModuleNotFoundError:
+    from src.workflow import run_full_pipeline
+
+>>>>>>> parent of ee2e379 (Potential fix for pull request finding)
 
 USER_CONFIG = {
     "runtime": {"execution_preset": "smoke", "output_base_dir": "./sanity_outputs", "n_jobs": 1},
